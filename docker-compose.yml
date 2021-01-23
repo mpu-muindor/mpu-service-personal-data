@@ -1,0 +1,101 @@
+version: '3'
+services:
+  mpu-pd-app:
+    build:
+      context: .
+      dockerfile: ./docker/php/Dockerfile
+    image: mpu-pd-app
+    container_name: ${APP_NAME}
+    restart: unless-stopped
+    tty: true
+    volumes:
+      - ./src:/app
+      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/local.ini
+    working_dir: /app
+    networks:
+      - pd-network
+    depends_on:
+      - mpu-pd-db
+      - mpu-pd-composer
+
+  mpu-pd-queue:
+    image: ipunktbs/laravel-queue-worker:php7.4-v4.5
+    container_name: mpu-pd-queue
+    restart: on-failure
+    tty: true
+    entrypoint: ["echo", "Service foo disabled"]
+    environment:
+      QUEUE_CONNECTION: database
+    volumes:
+      - ./src:/app
+    networks:
+      - pd-network
+    depends_on:
+      - mpu-pd-db
+      - mpu-pd-composer
+
+  mpu-pd-webserver:
+    image: nginx:alpine
+    container_name: mpu-pd-webserver
+    restart: unless-stopped
+    tty: true
+    ports:
+      - ${NGINX_PORT}:80
+      - ${NGINX_SSL_PORT}:443
+    environment:
+      NGINX_ENVSUBST_TEMPLATE_SUFFIX: ".conf"
+      APP_NAME: "${APP_NAME}"
+      SERVER_NAME: "${SERVER_NAME}"
+      SERVICE_AUTH_URL: "${SERVICE_AUTH_URL}"
+      SERVICE_AUTH_SECRET: "${SERVICE_AUTH_SECRET}"
+    volumes:
+      - ./src:/app
+      - ./docker/nginx/conf.d/:/etc/nginx/templates/
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
+    networks:
+      - pd-network
+    depends_on:
+      - mpu-pd-app
+
+  mpu-pd-db:
+    image: library/postgres:13.1-alpine
+    container_name: ${DB_NAME}
+    restart: always
+    environment:
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=stage
+    volumes:
+      - ./docker/postgresql/data:/var/lib/postgresql/data
+    networks:
+      - pd-network
+
+  mpu-pd-composer:
+    image: composer:2.0
+    volumes:
+      - ./src:/app
+    working_dir: /app
+    command: composer install
+
+  mpu-pd-redis:
+    image: "redis:alpine"
+    command: redis-server
+    environment:
+      - REDIS_REPLICATION_MODE=master
+    networks:
+      - pd-network
+
+  mpu-pd-migrator:
+    image: ${APP_NAME}
+    command: [ "/app/wait-for-it.sh", "${DB_NAME}:5432", "-t", "10", "--", "php", "/app/artisan", "migrate" ]
+    volumes:
+      - ./src:/app
+    networks:
+      - pd-network
+    depends_on:
+      - mpu-pd-composer
+      - mpu-pd-db
+
+networks:
+  pd-network:
+    driver: bridge
